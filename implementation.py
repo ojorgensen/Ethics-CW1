@@ -4,7 +4,7 @@ import numpy as np
 
 from aif360.datasets import StandardDataset
 from aif360.metrics import ClassificationMetric
-from aif360.algorithms.preprocessing.reweighing import Reweighing
+from aif360.algorithms.preprocessing.reweighing import Reweighing, ReweighingMeta 
 
 import pandas as pd
 
@@ -104,26 +104,99 @@ for i in range(5):
 # We will evaluate each model twice: once using accuracy, and again using the AIF360 metric.
 # We will save the best model based on accuracy, and the best model based on the AIF360 metric.
 
-hyperparameters = { 'C': [0.01, 0.1, 1, 10, 100]}
+def hyperparameter_tuning(train_val_splits, unprivileged_groups, privileged_groups, reweigher=None):
+    hyperparameters = { 'C': [1e-7, 1e-6, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1, 10]}
+    averaged_results = dict()
+    # Perform a grid search over the hyperparameters (Can change this later)
+    for C in hyperparameters['C']:
+        # Train a model on each of the 5 train/val splits
+        val_accuracies = []
+        val_aif360_metrics = []
+        for i in range(5):
+            train_train = train_val_splits[i][0]
+            train_val = train_val_splits[i][1]
+            model = sklearn.linear_model.LogisticRegression(C=C, solver='liblinear')
+            model.fit(train_train.features, train_train.labels.ravel())
+            model = ReweighingMeta(model, reweigher)
 
-# Perform a grid search over the hyperparameters (Can change this later)
-for C in hyperparameters['C']:
-    # Train a model on each of the 5 train/val splits
-    for i in range(5):
-        train_train = train_val_splits[i][0]
-        train_val = train_val_splits[i][1]
-        model = sklearn.linear_model.LogisticRegression(C=C, solver='liblinear')
-        model.fit(train_train.features, train_val.labels.ravel())
-        # Evaluate the model on the validation set
-        val_predictions = train_val.copy()
-        val_predictions.labels = model.predict(train_val.features)
-        val_accuracy = sklearn.metrics.accuracy_score(train_val.labels, val_predictions)
-        metric = ClassificationMetric(train_val, val_predictions, unprivileged_groups=unprivileged_groups, privileged_groups=privileged_groups)
-        metric_arrs = {}
-        #Statistical Parity Difference measures the difference of the above values instead of ratios, hence we
-        #would like it to be close to 0.
-        metric_arrs['stat_par_diff']=(metric.statistical_parity_difference())
+            # Evaluate the model on the validation set
+            val_predictions = train_val.copy()
+            val_predictions.labels = model.predict(train_val.features)
+            val_accuracy = sklearn.metrics.accuracy_score(train_val.labels, val_predictions.labels)
+            metric = ClassificationMetric(train_val, val_predictions, unprivileged_groups=unprivileged_groups, privileged_groups=privileged_groups)
+            metric_arrs = {}
+            #Statistical Parity Difference measures the difference of the above values instead of ratios, hence we
+            #would like it to be close to 0.
+            metric_arrs['stat_par_diff']=(metric.statistical_parity_difference())
+            val_accuracies.append(val_accuracy)
+            val_aif360_metrics.append(metric_arrs['stat_par_diff'])
+        
+        # Average the results of the 5 train/val splits
+        val_accuracy = np.mean(val_accuracies)
+        val_aif360_metric = np.mean(val_aif360_metrics)
+        print("C: ", C)
+        print("Validation Accuracy: ", val_accuracy)
+        print("Validation Statistical Parity Difference: ", val_aif360_metric)
+        averaged_results[C] = (val_accuracy, val_aif360_metric)
 
-    print("C: ", C)
-    print("Validation Accuracy: ", val_accuracy)
-    print("Validation Statistical Parity Difference: ", metric_arrs['stat_par_diff'])
+    # Choose the best hyperparameter for accuracy
+    accurate_C = max(averaged_results, key=lambda x: averaged_results[x][0])
+    stat_par_diff_C = max(averaged_results, key=lambda x: averaged_results[x][1])
+    print("Best C for accuracy: ", accurate_C)
+    print("Best C for Statistical Parity Difference: ", stat_par_diff_C)
+
+    # train a model on the entire training set using the best hyperparameter
+    accurate_model = sklearn.linear_model.LogisticRegression(C=accurate_C, solver='liblinear')
+    accurate_model.fit(train_split.features, train_split.labels.ravel())
+    fair_model = sklearn.linear_model.LogisticRegression(C=stat_par_diff_C, solver='liblinear')
+    fair_model.fit(train_split.features, train_split.labels.ravel())
+    return accurate_model, fair_model
+
+# Evaluate the model on the test set
+def evaluate_model(model):
+
+    test_predictions = test.copy()
+    test_predictions.labels = model.predict(test.features)
+    test_accuracy = sklearn.metrics.accuracy_score(test.labels, test_predictions.labels)
+    metric = ClassificationMetric(test, test_predictions, unprivileged_groups=unprivileged_groups, privileged_groups=privileged_groups)
+    metric_arrs = {}
+    #Statistical Parity Difference measures the difference of the above values instead of ratios, hence we
+    #would like it to be close to 0.
+    metric_arrs['stat_par_diff']=(metric.statistical_parity_difference())
+    return test_accuracy, metric_arrs
+
+model_1, model_2 = hyperparameter_tuning(train_val_splits, unprivileged_groups, privileged_groups)
+
+model_1_scores = evaluate_model(model_1)
+model_2_scores = evaluate_model(model_2)
+print("Model 1 Accuracy: ", model_1_scores[0])
+print("Model 1 Statistical Parity Difference: ", model_1_scores[1]['stat_par_diff'])
+print("Model 2 Accuracy: ", model_2_scores[0])
+print("Model 2 Statistical Parity Difference: ", model_2_scores[1]['stat_par_diff'])
+
+# Task 2:
+# This looks very similar to before, but first using some fairness-aware method.
+# Will start with the simplest one: Reweighing
+
+# First, we will reweigh the training set
+# Do this by reweighing for each train split separately
+RW_train_val_splits = dict()
+for i in range(5):
+    train_split = train_val_splits[i][0]
+    RW = Reweighing(unprivileged_groups=unprivileged_groups, privileged_groups=privileged_groups)
+    RW.fit(train_split)
+    train_split_reweighed = RW.transform(train_split)
+    # Use the instance weights to reweigh the training set
+    train_split_reweighed 
+     
+    RW_train_val_splits[i] = (train_split_reweighed, train_val_splits[i][1])
+
+# Perform hyperparameter tuning and evaluation as before
+model_3, model_4 = hyperparameter_tuning(RW_train_val_splits, unprivileged_groups, privileged_groups, reweigh = True)
+
+model_3_scores = evaluate_model(model_3)
+model_4_scores = evaluate_model(model_4)
+print("Model 3 Accuracy: ", model_3_scores[0])
+print("Model 3 Statistical Parity Difference: ", model_3_scores[1]['stat_par_diff'])
+print("Model 4 Accuracy: ", model_4_scores[0])
+print("Model 4 Statistical Parity Difference: ", model_4_scores[1]['stat_par_diff'])
