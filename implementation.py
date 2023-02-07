@@ -4,7 +4,7 @@ import numpy as np
 
 from aif360.datasets import StandardDataset
 from aif360.metrics import ClassificationMetric
-from aif360.algorithms.preprocessing.reweighing import Reweighing, ReweighingMeta 
+from aif360.algorithms.preprocessing.reweighing import Reweighing 
 
 import pandas as pd
 
@@ -104,7 +104,7 @@ for i in range(5):
 # We will evaluate each model twice: once using accuracy, and again using the AIF360 metric.
 # We will save the best model based on accuracy, and the best model based on the AIF360 metric.
 
-def hyperparameter_tuning(train_val_splits, unprivileged_groups, privileged_groups, reweigher=None):
+def hyperparameter_tuning(train_val_splits, unprivileged_groups, privileged_groups, RW_weights = None):
     hyperparameters = { 'C': [1e-7, 1e-6, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1, 10]}
     averaged_results = dict()
     # Perform a grid search over the hyperparameters (Can change this later)
@@ -115,9 +115,11 @@ def hyperparameter_tuning(train_val_splits, unprivileged_groups, privileged_grou
         for i in range(5):
             train_train = train_val_splits[i][0]
             train_val = train_val_splits[i][1]
-            model = sklearn.linear_model.LogisticRegression(C=C, solver='liblinear')
+            if RW_weights is None:
+                model = sklearn.linear_model.LogisticRegression(C=C, solver='liblinear')
+            else:
+                model = sklearn.linear_model.LogisticRegression(C=C, solver='liblinear', class_weight=RW_weights)                
             model.fit(train_train.features, train_train.labels.ravel())
-            model = ReweighingMeta(model, reweigher)
 
             # Evaluate the model on the validation set
             val_predictions = train_val.copy()
@@ -179,20 +181,21 @@ print("Model 2 Statistical Parity Difference: ", model_2_scores[1]['stat_par_dif
 # Will start with the simplest one: Reweighing
 
 # First, we will reweigh the training set
-# Do this by reweighing for each train split separately
-RW_train_val_splits = dict()
-for i in range(5):
-    train_split = train_val_splits[i][0]
-    RW = Reweighing(unprivileged_groups=unprivileged_groups, privileged_groups=privileged_groups)
-    RW.fit(train_split)
-    train_split_reweighed = RW.transform(train_split)
-    # Use the instance weights to reweigh the training set
-    train_split_reweighed 
-     
-    RW_train_val_splits[i] = (train_split_reweighed, train_val_splits[i][1])
+RW = Reweighing(unprivileged_groups=unprivileged_groups,
+               privileged_groups=privileged_groups)
+RW.fit(train)
+transf_train = RW.transform(train)
+
+# Use these weights to get class weights
+
+
+
+print("Reweighing weights: ", RW_weights)
+exit(0)
+
 
 # Perform hyperparameter tuning and evaluation as before
-model_3, model_4 = hyperparameter_tuning(RW_train_val_splits, unprivileged_groups, privileged_groups, reweigh = True)
+model_3, model_4 = hyperparameter_tuning(train_val_splits, unprivileged_groups, privileged_groups, RW_weights = RW_weights)
 
 model_3_scores = evaluate_model(model_3)
 model_4_scores = evaluate_model(model_4)
