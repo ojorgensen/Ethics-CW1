@@ -167,6 +167,7 @@ def evaluate_model(model):
     metric_arrs['stat_par_diff']=(metric.statistical_parity_difference())
     return test_accuracy, metric_arrs
 
+
 model_1, model_2 = hyperparameter_tuning(train_val_splits, unprivileged_groups, privileged_groups)
 
 model_1_scores = evaluate_model(model_1)
@@ -179,6 +180,7 @@ print("Model 2 Statistical Parity Difference: ", model_2_scores[1]['stat_par_dif
 # Task 2:
 # This looks very similar to before, but first using some fairness-aware method.
 # Will start with the simplest one: Reweighing
+
 
 # First, we will reweigh the training set
 RW = Reweighing(unprivileged_groups=unprivileged_groups,
